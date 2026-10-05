@@ -24,10 +24,17 @@ function engine(on: any, opts: { noChrome?: boolean } = {}) {
   on('fs.write', (_$: any, e: any) => ((writes[e.path] = e.text), { value: undefined }))
   on('fs.exists', () => ({ value: !opts.noChrome }))
   on('env.get', () => ({ value: '/tmp/' }))
-  on('process.run', (_$: any, e: any) => (runs.push(e.argv), { value: { exitCode: 0, stdout: '', stderr: '' } }))
+  on('process.run', (_$: any, e: any) => {
+    runs.push(e.argv)
+    // the on-device model answers the "why" lines, wrapped in a code fence as fm does
+    const stdout = e.argv[0] === '/usr/bin/fm' ? '```json\n["tokens now expire after an hour"]\n```' : ''
+    return { value: { exitCode: 0, stdout, stderr: '' } }
+  })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [{ id: 'mission-control', title: 'Mission Control', isShown: true, isFocused: true, isPlaced: true }] }))
-  on('model.complete', () => ({ value: { isAnswered: true, text: '["tokens now expire after an hour"]', usage: { input_tokens: 1, output_tokens: 1 } } }))
+  on('model.complete', () => {
+    throw new Error('no paid model call: the why lines come from the on-device model')
+  })
   on('ui.render', ($: any, e: any) => $.ui.resolve(e).Text({ children: 'band below' }))
   return { runs, writes, clock }
 }
@@ -170,6 +177,8 @@ describe('mission-control', () => {
     const drawn = writes['/tmp/mission-control/map.svg'] ?? ''
     expect(drawn).toContain('tokens now expire') // the why, wrapped over two lines
     expect(drawn).toContain('after an hour')
+    const fm = runs.find(a => a[0] === '/usr/bin/fm')
+    expect(fm?.slice(0, 3)).toEqual(['/usr/bin/fm', 'respond', '--no-stream'])
     await pane.unmount()
     // 3. In a tall enough pane the picture's size follows the width alone: two heights, one size.
     const rowsAt = async (bodyRows: number) => {

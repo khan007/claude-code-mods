@@ -12,6 +12,13 @@ import { label, lines, summary } from './tree'
 
 const PANE = 'mission-control'
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+// The one-line "why" per changed file comes from Apple's on-device model (macOS 26+): local, free, about a second.
+const FM = '/usr/bin/fm'
+const WHY_SYSTEM =
+  'You describe code changes for a person skimming. For each file you get the removed lines (-) and added lines (+). ' +
+  'Write what the change does in plain English, at most 60 characters, never quoting code, naming the real things that changed. ' +
+  'Examples of the style: "Renames getUser to fetchUser", "Logs a warning when the cache is empty". ' +
+  'Reply with a JSON array of strings only, one per file, in the same order.'
 const MAX_NODES = 300
 const MAX_FILES = 14
 const BAND_AFTER_MS = 30_000 // the band stays this long after a turn ends
@@ -259,16 +266,16 @@ async function explain($: EngineInterface, forTurn: number, edits: Map<string, s
   const paths = [...edits.keys()]
   const plain = (t: string) => t.replace(/[<>"]/g, ' ')
   const body = paths.map((p, i) => `<file n="${i + 1}" name="${plain(p.split('/').slice(-2).join('/'))}">\n${plain((edits.get(p) ?? []).join('\n').slice(0, 1500))}\n</file>`).join('\n')
-  const r = await $.model.complete({
-    model: 'haiku',
-    maxTokens: 400,
-    system: 'For each file, say in plain words what changed, at most 60 characters, no em dashes. Reply with a JSON array of strings only, one per file, in the same order.',
-    prompt: `${body}\n\nReply with the JSON array only: ${paths.length} strings.`,
+  // No on-device model (an older macOS, Apple Intelligence off): no "why" lines, and no paid call in their place.
+  if (!(await $.fs.exists(FM))) return
+  const r = await $.process.run(['/usr/bin/fm', 'respond', '--no-stream', '--greedy', '--guardrails', 'permissive-content-transformations', '--instructions', WHY_SYSTEM], {
+    stdin: `${body}\n\nReply with the JSON array only: ${paths.length} strings.`,
+    timeoutMs: 30_000,
   })
-  if (!r.isAnswered) return
+  if (r.exitCode !== 0) return
   let whys: unknown
   try {
-    whys = JSON.parse(r.text.slice(r.text.indexOf('['), r.text.lastIndexOf(']') + 1))
+    whys = JSON.parse(r.stdout.slice(r.stdout.indexOf('['), r.stdout.lastIndexOf(']') + 1))
   } catch {
     return
   }
