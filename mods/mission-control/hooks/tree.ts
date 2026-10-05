@@ -18,9 +18,32 @@ export function label(e: Record<string, unknown>): { label: string; family: stri
   return { label: tool, family: tool.toLowerCase() }
 }
 
+const MAX_PAST = 20 // earlier turns kept in the tree, one line each
+
+// The tree as a new turn starts: earlier turns, plus the one just ended folded into one
+// line ("◇ turn 3 · fix login · 1 agents · 12 tools"), the newest MAX_PAST of them.
+export function archive(list: MissionNode[], ended: number): MissionNode[] {
+  const past = list.filter(n => n.family === 'past')
+  const main = list.find(n => n.id === 'main')
+  if (!main) return past.slice(-MAX_PAST)
+  const s = summary(list.filter(n => n.family !== 'past'))
+  const counts = `${s.agents ? ` · ${s.agents} agents` : ''}${s.tools ? ` · ${s.tools} tools` : ''}${s.failed ? ` · ${s.failed} failed` : ''}`
+  const folded: MissionNode = {
+    id: `turn-${ended}`,
+    parent: null,
+    kind: 'main',
+    label: `turn ${ended} · ${main.label.replace(/^main · /, '')}${counts}`,
+    family: 'past',
+    status: main.status === 'failed' ? 'failed' : 'done',
+    start: main.start,
+    end: main.end ?? Date.now(),
+  }
+  return [...past, folded].slice(-MAX_PAST)
+}
+
 const ICON: Record<string, string> = { bash: '$', edit: '✎', read: '◉', search: '⌕', browser: '◎' }
 export const icon = (n: MissionNode) =>
-  n.kind === 'main' ? '◆' : n.kind === 'agent' ? '●' : (ICON[n.family] ?? (n.family.startsWith('mcp:') ? '⌁' : '·'))
+  n.kind === 'main' ? (n.family === 'past' ? '◇' : '◆') : n.kind === 'agent' ? '●' : (ICON[n.family] ?? (n.family.startsWith('mcp:') ? '⌁' : '·'))
 
 export function took(n: Pick<MissionNode, 'start' | 'end'>, at = Date.now()) {
   const s = Math.max(0, ((n.end ?? at) - n.start) / 1000)

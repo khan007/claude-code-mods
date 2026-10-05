@@ -4,7 +4,7 @@ export type MissionNode = {
   parent: string | null
   kind: 'main' | 'agent' | 'tool'
   label: string
-  family: string // for tools: 'bash', 'edit', 'read', 'browser', 'mcp:<server>', ...
+  family: string // for tools: 'bash', 'edit', 'read', 'browser', 'mcp:<server>', ...; 'past' for an earlier turn's line
   status: 'running' | 'done' | 'failed'
   start: number
   end?: number
@@ -31,6 +31,7 @@ declare module 'claude-code' {
       frame: MissionFrame
       turn: number
       now: number
+      cwd: string // the session's directory, for relative paths in Bash commands
     }
   }
 }

@@ -8,7 +8,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { MapFile, MissionNode } from '../types'
 import { importsOf, svg } from './map'
-import { label, lines, summary } from './tree'
+import { archive, label, lines, summary } from './tree'
 
 const PANE = 'mission-control'
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -28,6 +28,7 @@ const INTERNAL = new Set(['SubagentHandback', 'ToolSearch', 'TaskCreate', 'TaskU
 export const CODE_FILE = /\.(tsx?|jsx?|mjs|cjs|py|go|rs|rb|java|kt|swift|c|h|cc|cpp|hpp|cs|php|vue|svelte|css|scss|html|md|mdx|json|ya?ml|toml|sh|sql|lua|ex|exs)$/i
 
 // Held by the host, so a hot reload keeps the picture.
+const cwd = atom({ plugin: 'mission-control', key: 'cwd' } as const, '')
 const nodes = atom({ plugin: 'mission-control', key: 'nodes' } as const, [] as MissionNode[])
 const files = atom({ plugin: 'mission-control', key: 'files' } as const, [] as MapFile[])
 const view = atom({ plugin: 'mission-control', key: 'view' } as const, 'who' as 'who' | 'code')
@@ -48,6 +49,56 @@ export function cap(list: MissionNode[]) {
   return list.filter(n => n.kind !== 'tool' || keep.has(n))
 }
 
+// The code files a Bash command names (cat, sed -n, head ...), as absolute paths. Follows
+// `cd`; skips flags, globs and anything that is not code. Words only, no shell is run.
+export function bashPaths(command: string, base: string, home: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let quote = ''
+  let has = false
+  const end = () => {
+    if (has) words.push(word)
+    word = ''
+    has = false
+  }
+  for (const c of command) {
+    if (quote) {
+      if (c === quote) quote = ''
+      else word += c
+    } else if (c === '"' || c === "'") {
+      quote = c
+      has = true
+    } else if (/\s/.test(c)) end()
+    else if ('|&;()'.includes(c)) {
+      end()
+      words.push(';')
+    } else if (c === '<' || c === '>') end()
+    else {
+      word += c
+      has = true
+    }
+  }
+  end()
+  const abs = (p: string, from: string) => {
+    const full = p.startsWith('~/') ? `${home}/${p.slice(2)}` : p.startsWith('/') ? p : `${from}/${p}`
+    const out: string[] = []
+    for (const part of full.split('/')) {
+      if (part === '..') out.pop()
+      else if (part && part !== '.') out.push(part)
+    }
+    return `/${out.join('/')}`
+  }
+  let dir = base
+  const found: string[] = []
+  words.forEach((w, i) => {
+    const isFirst = i === 0 || words[i - 1] === ';'
+    if (isFirst || w === ';' || w.startsWith('-') || /[*?$`]/.test(w)) return
+    if (words[i - 1] === 'cd' && (i === 1 || words[i - 2] === ';')) dir = abs(w, dir)
+    else if (CODE_FILE.test(w)) found.push(abs(w, dir))
+  })
+  return [...new Set(found)]
+}
+
 // The first `max` characters, cut at a word.
 function words(text: string, max: number) {
   const t = text.replace(/\s+/g, ' ').trim()
@@ -59,6 +110,7 @@ function words(text: string, max: number) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
+    await update($, cwd, () => (e as { cwd?: string }).cwd ?? '')
     await $.command.register({ name: 'mission', description: 'Open the live map of agents and tool calls; /mission code opens the code map', argumentHint: '[who|code]' }).catch(() => {})
     $.clock.every(1000, () => {
       void (async () => {
@@ -74,12 +126,12 @@ export const register: Register = on => {
     await update($, turn, () => t)
     changes.clear()
     const main: MissionNode = { id: 'main', parent: null, kind: 'main', label: `main · ${words(e.text, 50)}`, family: 'main', status: 'running', start: Date.now() }
-    // A background agent still running from the last turn carries over, with its open calls.
+    // Earlier turns stay as one line each; a background agent still running carries over, with its open calls.
     await update($, nodes, list => {
       const agents = list.filter(n => n.kind === 'agent' && n.status === 'running').map(a => ({ ...a, parent: 'main' }))
       const ids = new Set(agents.map(a => a.id))
       const open = list.filter(n => n.kind === 'tool' && n.status === 'running' && ids.has(n.parent ?? ''))
-      return [main, ...agents, ...open]
+      return [...archive(list, t - 1), main, ...agents, ...open]
     })
     return next(e)
   })
@@ -107,6 +159,12 @@ export const register: Register = on => {
     })
     const path = typeof args.file_path === 'string' ? args.file_path : undefined
     if (path) await touch($, path, e.tool === 'Read' ? 'read' : e.tool === 'Write' ? 'write' : e.tool === 'Edit' ? 'edit' : 'search', false)
+    if (e.tool === 'Bash' && typeof args.command === 'string') {
+      const home = (await $.env.get('HOME')) ?? ''
+      for (const p of bashPaths(args.command, (await read($, cwd)) || home, home).slice(0, 6)) {
+        if (await $.fs.exists(p)) await touch($, p, 'read', false)
+      }
+    }
 
     let failed = true
     let r: Awaited<ReturnType<typeof next>>
@@ -207,7 +265,7 @@ export const register: Register = on => {
         {ls.slice(-rows + 1).map(l => (
           <Text wrap="truncate-end">
             <Text dimColor>{l.prefix}</Text>
-            <Text color={l.status === 'running' ? 'yellow' : l.status === 'failed' ? 'red' : l.node.kind === 'tool' ? undefined : 'green'} bold={l.node.kind !== 'tool'} dimColor={l.status === 'done' && l.node.kind === 'tool'}>
+            <Text color={l.status === 'running' ? 'yellow' : l.status === 'failed' ? 'red' : l.node.kind === 'tool' || l.node.family === 'past' ? undefined : 'green'} bold={l.node.kind !== 'tool' && l.node.family !== 'past'} dimColor={l.status === 'done' && (l.node.kind === 'tool' || l.node.family === 'past')}>
               {l.text}
             </Text>
           </Text>
@@ -220,7 +278,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const rest = await next(e) // what other mods and Claude Code draw here stays
     const list = await read($, nodes)
-    const main = list.find(n => n.kind === 'main')
+    const main = list.find(n => n.id === 'main')
     const s = summary(list)
     const isRecent = main !== undefined && (main.status === 'running' || Date.now() - (main.end ?? 0) < BAND_AFTER_MS)
     if (e.props.hasSurvey || !isRecent || s.tools + s.agents === 0) return rest

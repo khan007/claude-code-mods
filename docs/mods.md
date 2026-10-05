@@ -26,8 +26,10 @@
 - `/mission code` opens straight to the code map, `/mission who` to the agents
 - Headless Chrome (`/Applications/Google Chrome.app`) draws the code map as an image, in a throwaway profile
 - The Code view is macOS only and needs a terminal that shows images (Ghostty, kitty, iTerm2)
+- Who keeps earlier turns as one line each (`◇ turn 3 · fix login · 12 tools`), the newest 20
 - A file glows blue while Claude reads it, orange while it edits it, and turns green with a check once changed
-- One Haiku call after each turn writes the line under each changed file
+- Files read through Bash (`cat`, `sed -n`, `head` ...) go on the code map too
+- Apple's on-device model (`fm respond`, macOS 26+) writes the line under each changed file after each turn
 
 ### 🌦️ token-weather
 

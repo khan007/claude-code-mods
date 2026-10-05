@@ -1,8 +1,8 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { edges, fit, importsOf, layout, svg, titleOf, wrap } from '../hooks/map'
-import { label, lines, summary } from '../hooks/tree'
-import { cap } from '../hooks/register'
+import { archive, label, lines, summary } from '../hooks/tree'
+import { bashPaths, cap } from '../hooks/register'
 
 let mockClock: any
 const PANE = { component: 'Pane', requestId: 'mission-control', props: { title: 'Mission Control', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 30 } } }
@@ -190,5 +190,54 @@ describe('mission-control', () => {
     expect(await rowsAt(50)).toBe(30)
     expect(await rowsAt(60)).toBe(30)
     expect(summary([]).tools).toBe(0)
+  })
+
+  test('earlier turns stay in the who tree as one line each, the band counts only this turn', async ($, on) => {
+    engine(on)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
+    await $.turn.start({ text: 'fix the login bug', turnId: 't1' } as any)
+    await $.agent.spawn({ prompt: 'check it', description: 'test login flow' } as any)
+    await $.tool.call({ tool: 'Read', file_path: '/repo/src/a.ts' } as any)
+    await $.tool.call({ tool: 'Bash', description: 'Run tests' } as any)
+    await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1 } as any)
+    await $.turn.start({ text: 'add a test', turnId: 't2' } as any)
+    await $.tool.call({ tool: 'Bash', description: 'Run tests' } as any)
+
+    const pane = await $.ui.mount({ plugin: 'mission-control', surface: 'terminal', ...PANE } as any)
+    expect(await pane.find({ type: 'Text', text: /◇ turn 1 · fix the login bug · 1 agents · 2 tools/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /◆ main · add a test/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /◉ read: src\/a\.ts/ })).toBeUndefined() // folded into its turn's line
+    expect(await pane.find({ type: 'Text', text: /1 agents \(1 running\) · 1 tool calls/ })).toBeDefined() // ag1 never ended: it carries over
+    expect(await pane.find({ type: 'Text', text: /● test login flow/ })).toBeDefined()
+    await pane.unmount()
+    const band = await $.ui.mount({ plugin: 'mission-control', surface: 'terminal', ...BAND } as any)
+    expect(await band.find({ type: 'Text', text: /1 tools/ })).toBeDefined()
+    await band.unmount()
+
+    // Only the newest turns are kept.
+    const past = (n: number) => ({ id: `turn-${n}`, parent: null, kind: 'main' as const, label: `turn ${n}`, family: 'past', status: 'done' as const, start: n, end: n })
+    const main = { id: 'main', parent: null, kind: 'main' as const, label: 'main · last', family: 'main', status: 'done' as const, start: 99, end: 100 }
+    const kept = archive([...Array.from({ length: 30 }, (_, i) => past(i + 1)), main], 31)
+    expect(kept).toHaveLength(20)
+    expect(kept.at(-1)?.label).toBe('turn 31 · last')
+    expect(kept[0]?.id).toBe('turn-12')
+    expect(archive([], 0)).toEqual([])
+  })
+
+  test('files read with Bash (cat, sed, head) go on the code map', async ($, on) => {
+    expect(bashPaths('cd /repo/mods && sed -n 1,40p hooks/a.ts | head; cat ~/notes.md "/repo/b c.go"', '/x', '/home/me')).toEqual([
+      '/repo/mods/hooks/a.ts',
+      '/home/me/notes.md',
+      '/repo/b c.go',
+    ])
+    expect(bashPaths('grep -rn foo src/*.ts --include=*.go; ls shots/v2.png; echo hi > out.json', '/repo', '/h')).toEqual(['/repo/out.json'])
+    expect(bashPaths('cat ../lib/x.py', '/repo/app', '/h')).toEqual(['/repo/lib/x.py'])
+
+    engine(on)
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/repo' } as any)
+    await $.turn.start({ text: 'look around', turnId: 't1' } as any)
+    await $.tool.call({ tool: 'Bash', command: 'cat src/pages/login.tsx && head -5 README.md', description: 'Read two files' } as any)
+    const r = await $.command.run({ command: 'mission', args: '' } as any)
+    expect(r.text).toMatch(/1 tool calls · 2 files/)
   })
 })
